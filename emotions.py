@@ -1,53 +1,122 @@
 import os
-import cv2
 import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dense, Dropout, Flatten, Input
 
-from model import Model
+# Check if data directories exist
+val_dir = "./data/test"
+train_dir = "./data/train"
+for directory in [val_dir, train_dir]:
+    if not os.path.exists(directory):
+        print(f"Error: Directory '{directory}' does not exist.")
+        exit()
 
+# Define data generators
+train_datagen = ImageDataGenerator(rescale=1./255)
+val_datagen = ImageDataGenerator(rescale=1./255)
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"
+train_generator = train_datagen.flow_from_directory(
+        train_dir,
+        target_size=(224, 224),
+        batch_size=64,
+        color_mode="grayscale",
+        class_mode='categorical')
 
-# Load the train model
-cnn_model = Model()
+validation_generator = val_datagen.flow_from_directory(
+        val_dir,
+        target_size=(224, 224),
+        batch_size=64,
+        color_mode="grayscale",
+        class_mode='categorical')
 
-# Prevent openCL usage and unecessary logging messages
-cv2.ocl.setUseOpenCL(False)
+class Model:
 
-# Dict which assigns each label an emotion (ASC)
-emotions = {0: "Angry", 1: "Disgusted", 2: "Fearful", 3: "Happy", 4: "Neutral", 5: "Sad", 6: "Surprised"}
+    def __init__(self):
+        self.model = Sequential()
 
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.num_train = 4817
+        self.num_val = 533
+        self.batch_size = 64
+        self.num_epoch = 50
 
-# Start webcam feed
-cap = cv2.VideoCapture(0)
+        self.init_model()
 
-while True:
-    # Find haar cascade to draw bounding box around face
-    ret, frame = cap.read()
-    if not ret:
-        break
+    def init_model(self):
+        self.model.add(Input(shape=(224, 224, 1)))
+        self.model.add(Conv2D(32, kernel_size=(3, 3), activation='relu'))
+        self.model.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        self.model.add(Dropout(0.25))
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
+        self.model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        self.model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        self.model.add(Dropout(0.25))
 
-    for (x, y, w, h) in faces:
-        cv2.rectangle(frame, (x, y - 50), (x + w, y + h  + 10), (255, 0, 0), 2)
+        self.model.add(Flatten())
+        self.model.add(Dense(1024, activation='relu'))
+        self.model.add(Dropout(0.5))
+        self.model.add(Dense(7, activation='softmax'))
 
-        roi_gray = gray[y:y + h, x:x + w]
-        cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray, (244, 244)), -1), 0)
+        model_weights_path = "model.weights.h5"
+        if os.path.isfile(model_weights_path):
+            self.model.load_weights(model_weights_path)
+        else:
+            self.train()
 
-        prediction_indx = cnn_model.predict(cropped_img)
+    def plot_model_history(self, model_history):
+        fig, axs = plt.subplots(1, 2, figsize=(15, 5))
 
-        # Display the emotion on your face
-        cv2.putText(frame, emotions[prediction_indx], (x + 20, y - 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-        
+        # Summarize history for accuracy
+        axs[0].plot(range(1, len(model_history.history['accuracy']) + 1), model_history.history['accuracy'])
+        axs[0].plot(range(1, len(model_history.history['val_accuracy']) + 1), model_history.history['val_accuracy'])
 
-    cv2.imshow("Emotion Detector", frame)
+        axs[0].set_title('Model Accuracy')
+        axs[0].set_ylabel('Accuracy')
+        axs[0].set_xlabel('Epoch')
+        axs[0].set_xticks(np.arange(1, len(model_history.history['accuracy']) + 1), len(model_history.history['accuracy'])/10)
 
-    key = cv2.waitKey(1)
-    if key == ord('q'):
-       break
+        axs[0].legend(['train', 'val'], loc='best')
 
-cap.release()
+        # Summarize history for loss
+        axs[1].plot(range(1, len(model_history.history['loss']) + 1), model_history.history['loss'])
+        axs[1].plot(range(1, len(model_history.history['val_loss']) + 1), model_history.history['val_loss'])
 
-cv2.destroyAllWindows()
+        axs[1].set_title('Model Loss')
+        axs[1].set_ylabel('Loss')
+        axs[1].set_xlabel('Epoch')
+        axs[1].set_xticks(np.arange(1, len(model_history.history['loss']) + 1), len(model_history.history['loss'])/10)
+
+        axs[1].legend(['train', 'val'], loc='best')
+
+        fig.savefig('plot.png')
+
+        plt.show()
+
+    def train(self):
+        self.model.compile(loss='categorical_crossentropy', optimizer=Adam(learning_rate=0.0001), metrics=['accuracy'])
+        model_info = self.model.fit(
+            train_generator,
+            steps_per_epoch=self.num_train // self.batch_size,
+            epochs=self.num_epoch,
+            validation_data=validation_generator,
+            validation_steps=self.num_val // self.batch_size
+        )
+
+        self.model.save_weights("model.weights.h5")
+        self.model.save("model_full.h5")
+        self.plot_model_history(model_info)
+
+    def predict(self, cropped_img):
+        prediction = self.model.predict(cropped_img)
+        return int(np.argmax(prediction))
+
+# Assuming this Model class is what we use to instantiate the model
+# Instantiate the object
+emotion_model = Model()
+# To make a prediction using the predict method, pass the processed image
+# prediction = emotion_model.predict(processed_image)
