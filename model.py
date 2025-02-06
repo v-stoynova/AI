@@ -1,114 +1,62 @@
 import os
-
+import cv2
 import numpy as np
-import matplotlib.pyplot as plt
+from model import Model
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.optimizers import Adam
+# Set environment variable to limit TensorFlow logging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = "2"
 
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+# Load the trained model
+cnn_model = Model()
 
-from tensorflow.keras.layers import Conv2D
-from tensorflow.keras.layers import MaxPooling2D
-from tensorflow.keras.layers import Dense, Dropout, Flatten
+# Prevent usage of OpenCL to avoid potential issues and unnecessary logging messages
+cv2.ocl.setUseOpenCL(False)
 
-# Define data generators
-val_dir = "./data/test"
-train_dir = "./data/train"
+# Dictionary to map numerical labels to emotions
+emotions = {0: "Angry", 1: "Disgusted", 2: "Fearful", 3: "Happy", 4: "Neutral", 5: "Sad", 6: "Surprised"}
 
-train_datagen = ImageDataGenerator(rescale=1./255)
-val_datagen = ImageDataGenerator(rescale=1./255)
+# Load the Haar cascade for face detection
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-train_generator = train_datagen.flow_from_directory(
-        train_dir,
-        target_size=(244, 244),
-        batch_size=64,
-        color_mode="grayscale",
-        class_mode='categorical')
+# Start the webcam feed
+cap = cv2.VideoCapture(0)
 
-validation_generator = val_datagen.flow_from_directory(
-        val_dir,
-        target_size=(244, 244),
-        batch_size=64,
-        color_mode="grayscale",
-        class_mode='categorical')
+while True:
+    # Capture frame-by-frame
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-class Model:
+    # Convert to grayscale for Haar cascade
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
 
-    def __init__(self):
-        self.model = Sequential()
+    for (x, y, w, h) in faces:
+        # Draw a rectangle around the face
+        cv2.rectangle(frame, (x, y - 50), (x + w, y + h + 10), (255, 0, 0), 2)
 
-        self.num_train = 4817
-        self.num_val = 533
-        self.batch_size = 64
-        self.num_epoch = 50
+        # Format the ROI for the model
+        roi_gray = gray[y:y + h, x:x + w]
+        cropped_img = cv2.resize(roi_gray, (224, 224))
+        # cropped_img = np.expand_dims(cropped_img, axis=-1)  # Get shape: (244, 244, 1)
+        cropped_img = np.expand_dims(cropped_img, axis=0)  # Shape should be (1, 224, 224, 1)
 
-        self.init_model()
+        # Convert to float and scale the image
+        cropped_img = cropped_img.astype('float32') / 255.0
 
-    def init_model(self):
-        self.model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(244, 244, 1)))
-        self.model.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        self.model.add(Dropout(0.25))
+        # Predict emotion and assign label
+        prediction_idx = cnn_model.predict(cropped_img)
+        emotion_label = emotions[prediction_idx]
+        cv2.putText(frame, emotion_label, (x + 20, y - 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-        self.model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        self.model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        self.model.add(Dropout(0.25))
+    # Display the resulting frame
+    cv2.imshow("Emotion Detector", frame)
 
-        self.model.add(Flatten())
-        self.model.add(Dense(1024, activation='relu'))
-        self.model.add(Dropout(0.5))
-        self.model.add(Dense(7, activation='softmax'))
+    # Break the loop when 'q' key is pressed
+    key = cv2.waitKey(1)
+    if key == ord('q'):
+        break
 
-        if os.path.exists("model.h5"):
-            self.model.load_weights("model.h5")
-        else:
-            self.train()
-
-    def plot_model_history(self, model_history):
-        fig, axs = plt.subplots(1, 2, figsize=(15, 5))
-        
-        # Summarize history for accuracy
-        axs[0].plot(range(1, len(model_history.history['accuracy']) + 1), model_history.history['accuracy'])
-        axs[0].plot(range(1, len(model_history.history['val_accuracy']) + 1), model_history.history['val_accuracy'])
-        
-        axs[0].set_title('Model Accuracy')
-        axs[0].set_ylabel('Accuracy')
-        axs[0].set_xlabel('Epoch')
-        axs[0].set_xticks(np.arange(1, len(model_history.history['accuracy']) + 1), len(model_history.history['accuracy']) / 10)
-
-        axs[0].legend(['train', 'val'], loc='best')
-
-        # Summarize history for loss
-        axs[1].plot(range(1, len(model_history.history['loss']) + 1), model_history.history['loss'])
-        axs[1].plot(range(1, len(model_history.history['val_loss']) + 1), model_history.history['val_loss'])
-        
-        axs[1].set_title('Model Loss')
-        axs[1].set_ylabel('Loss')
-        axs[1].set_xlabel('Epoch')
-        axs[1].set_xticks(np.arange(1, len(model_history.history['loss']) + 1), len(model_history.history['loss']) / 10)
-
-        axs[1].legend(['train', 'val'], loc='best')
-
-        fig.savefig('plot.png')
-
-        plt.show()
-
-    def train(self):
-        self.model.compile(loss='categorical_crossentropy', optimizer=Adam(learning_rate=0.0001, decay=1e-6), metrics=['accuracy'])
-        model_info = self.model.fit_generator(train_generator,
-                                              steps_per_epoch=self.num_train // self.batch_size,
-                                              epochs=self.num_epoch,
-                                              validation_data=validation_generator,
-                                              validation_steps=self.num_val // self.batch_size)
-
-        self.model.save_weights("model.h5")
-
-        self.plot_model_history(model_info)
-
-    def predict(self, cropped_img):
-        prediction = self.model.predict(cropped_img)
-
-        return int(np.argmax(prediction))
+# When everything is done, release the capture
+cap.release()
+cv2.destroyAllWindows()
